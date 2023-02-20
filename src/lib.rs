@@ -22,11 +22,16 @@ mod tests {
         let mut stdout = ffmpeg
             .set_binary_path("./ffmpeg")
             .input_file("./sample.mp4")
-            .stream().unwrap();
-        let mut output_file = tokio::fs::File::create("./output-stream.mp4").await.unwrap();
-        tokio::io::copy(&mut stdout, &mut output_file).await.unwrap();
+            .stream()
+            .unwrap();
+        let mut output_file = tokio::fs::File::create("./output-stream.mp4")
+            .await
+            .unwrap();
+        tokio::io::copy(&mut stdout, &mut output_file)
+            .await
+            .unwrap();
     }
-    
+
     #[tokio::test]
     async fn resize_to_720() {
         let ffmpeg = FFMpeg::new();
@@ -39,4 +44,3 @@ mod tests {
             .unwrap();
     }
 }
-
