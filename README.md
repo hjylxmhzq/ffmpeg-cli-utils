@@ -2,17 +2,19 @@
 
 #### samples
 
-##### from input file to output file
+##### Simple input/output
+
+ffmpeg_utils_rs depends on tokio runtime
 
 before running codes below, ffmpeg should be placed in $PATH,
-or you can configure ffmpeg static binary path by using `set_binary_path`
+or you can configure ffmpeg static binary by using `set_binary_path`
 
 ```rust
 #[tokio::main]
 async fn main() {
   let ffmpeg = FFMpeg::new();
   ffmpeg
-      .set_binary_path("./ffmpeg")
+      .set_binary_path("./ffmpeg") // this line is not necessary if ffmpeg can be invoked globally
       .input_file("./sample.mp4")
       .output("./output.mp4")
       .await
@@ -20,7 +22,7 @@ async fn main() {
 }
 ```
 
-##### resize
+##### Resize to (width, height)
 
 ```rust
 #[tokio::main]
@@ -35,13 +37,13 @@ async fn main() {
 }
 ```
 
-##### return AsyncRead and use as stream
+##### Return AsyncRead and use as stream
 
 ```rust
 #[tokio::main]
 async fn main() {
   let ffmpeg = FFMpeg::new();
-  let mut stdout = ffmpeg
+  let mut reader = ffmpeg
       .set_binary_path("./ffmpeg")
       .input_file("./sample.mp4")
       .stream()
@@ -49,9 +51,24 @@ async fn main() {
   let mut output_file = tokio::fs::File::create("./output-stream.mp4")
       .await
       .unwrap();
-  tokio::io::copy(&mut stdout, &mut output_file)
+  tokio::io::copy(&mut reader, &mut output_file)
       .await
       .unwrap();
 }
 ```
 
+stream is useful in some realtime cases, e.g. in actix-web:
+
+```rust
+fn some_route() -> HttpResponse {
+  let mut reader = ffmpeg
+      .set_binary_path("./ffmpeg")
+      .input_file("./sample.mp4")
+      .stream()
+      .unwrap();
+  let reader_stream = tokio_util::io::ReaderStream::new(reader);
+  HttpResponse::Ok().streaming(reader_stream)
+}
+```
+
+// TODO: support more options
