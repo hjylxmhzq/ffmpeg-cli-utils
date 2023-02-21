@@ -7,7 +7,8 @@
 ffmpeg_utils_rs depends on tokio runtime
 
 before running codes below, ffmpeg should be placed in $PATH,
-or you can configure ffmpeg static binary by using `set_binary_path`
+or you can either configure ffmpeg static binary by using `set_binary_path`
+or set an env FFMEPG_BIN=path/to/ffmpeg
 
 ```rust
 #[tokio::main]

@@ -1,17 +1,28 @@
-mod wrap;
+mod async_output;
+mod error;
+mod input;
+mod macros;
 
-pub use wrap::FFMpeg;
+pub use input::FFMpegInput;
+
+pub struct FFMpeg {}
+
+impl FFMpeg {
+    pub fn new() -> FFMpegInput {
+        FFMpegInput::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use crate::wrap::FFMpeg;
+    use crate::FFMpeg;
     #[tokio::test]
     async fn output_to_file() {
         let ffmpeg = FFMpeg::new();
         ffmpeg
-            .set_binary_path("./ffmpeg")
             .input_file("./sample.mp4")
-            .output("./output.mp4")
+            .output_async()
+            .save("./output.mp4")
             .await
             .unwrap();
     }
@@ -22,6 +33,7 @@ mod tests {
         let mut stdout = ffmpeg
             .set_binary_path("./ffmpeg")
             .input_file("./sample.mp4")
+            .output_async()
             .stream()
             .unwrap();
         let mut output_file = tokio::fs::File::create("./output-stream.mp4")
@@ -38,8 +50,9 @@ mod tests {
         ffmpeg
             .set_binary_path("./ffmpeg")
             .input_file("./sample.mp4")
-            .resize((1280, 720))
-            .output("./output_720p.mp4")
+            .output_async()
+            .resize(1280, 720)
+            .save("./output_720p.mp4")
             .await
             .unwrap();
     }
