@@ -16,7 +16,12 @@ impl FFMpeg {
 #[cfg(test)]
 mod tests {
     use crate::FFMpeg;
-    use std::{process::{self, Stdio}, str::FromStr, sync::Once, fs};
+    use std::{
+        fs,
+        process,
+        str::FromStr,
+        sync::Once,
+    };
 
     static ONCE: Once = Once::new();
 
