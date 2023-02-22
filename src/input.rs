@@ -1,7 +1,7 @@
 use std::{env, path::Path};
 
 
-use crate::{async_output::FFmpegOutput, error::Error, owned};
+use crate::{output::FFmpegOutput, error::Error, owned};
 
 
 #[derive(Clone)]

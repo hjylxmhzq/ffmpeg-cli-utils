@@ -1,7 +1,7 @@
-mod async_output;
 mod error;
 mod input;
 mod macros;
+mod output;
 
 pub use input::FFMpegInput;
 
@@ -16,12 +16,7 @@ impl FFMpeg {
 #[cfg(test)]
 mod tests {
     use crate::FFMpeg;
-    use std::{
-        fs,
-        process,
-        str::FromStr,
-        sync::Once,
-    };
+    use std::{fs, process, str::FromStr, sync::Once};
 
     static ONCE: Once = Once::new();
 
@@ -104,7 +99,7 @@ mod tests {
             .set_binary_path("./ffmpeg")
             .input_file("./sample.mp4")
             .output_async()
-            .save("./output.mp4")
+            .async_save("./output.mp4")
             .await
             .unwrap();
     }
@@ -137,7 +132,6 @@ mod tests {
             .output_async()
             .resize(1280, 720)
             .save("./output_720p.mp4")
-            .await
             .unwrap();
     }
 }

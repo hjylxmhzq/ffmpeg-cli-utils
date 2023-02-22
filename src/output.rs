@@ -1,6 +1,8 @@
 use std::process::Stdio;
 
 use crate::{error::Error, input::FFMpegInput, owned};
+
+#[cfg(feature = "async")]
 use tokio::{
     io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream},
     process,
@@ -19,6 +21,11 @@ struct OutputOption {
     framerate: Option<u64>,
 }
 
+pub struct SpawnResult {
+    pub stdout: String,
+    pub stderr: String,
+}
+
 impl FFmpegOutput {
     pub fn new(ffmpeg_input: FFMpegInput) -> Self {
         FFmpegOutput {
@@ -31,7 +38,28 @@ impl FFmpegOutput {
             input: ffmpeg_input,
         }
     }
-    pub async fn save(&self, file: &str) -> Result<String, Error> {
+    pub fn save(&self, file: &str) -> Result<SpawnResult, Error> {
+        let ffmpeg_bin = self.input.get_ffmpeg_bin()?;
+
+        let args = self.build_args(Some(file.to_owned()))?;
+        println!("{ffmpeg_bin} {args:?}");
+        let child = std::process::Command::new(ffmpeg_bin)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+
+        let stdout = child.stdout;
+        let stderr = child.stderr;
+
+        let stdout = String::from_utf8_lossy(&stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&stderr).into_owned();
+
+        Ok(SpawnResult { stderr, stdout })
+    }
+    #[cfg(feature = "async")]
+    pub async fn async_save(&self, file: &str) -> Result<String, Error> {
         let ffmpeg_bin = self.input.get_ffmpeg_bin()?;
 
         let args = self.build_args(Some(file.to_owned()))?;
@@ -116,6 +144,7 @@ impl FFmpegOutput {
         self.output_option.size = Some((width, height));
         self
     }
+    #[cfg(feature = "async")]
     pub fn stream(&self) -> Result<DuplexStream, Error> {
         let (mut w, r) = duplex(self.output_option.stream_buffer_size);
         let ffmpeg_bin = self.input.get_ffmpeg_bin()?;
