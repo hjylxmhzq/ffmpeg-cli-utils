@@ -11,4 +11,7 @@ macro_rules! owned {
             .map(|item| item.to_owned())
             .collect::<Vec<_>>()
     };
+    () => {
+        Vec::<_>::new()
+    };
 }

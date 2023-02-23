@@ -2,10 +2,13 @@
 name = "ffmpeg_cli_utils"
 version = "0.1.0"
 edition = "2021"
-authors = ["Tonywho <hujingyuan25@163.com>"]
+authors = ["Tonywho <>"]
+repository = "https://github.com/hjylxmhzq/ffmpeg-cli-utils"
+
 
 [dependencies]
 futures = "0.3.26"
+lazy_static = "1.4.0"
 tokio = { version = "1", features = ["full"] }
 
 [features]

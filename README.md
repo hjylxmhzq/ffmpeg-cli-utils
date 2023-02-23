@@ -1,6 +1,6 @@
 ### ffmpeg_utils_rs
 
-#### samples
+#### Intro
 
 ##### Simple input/output
 
@@ -11,14 +11,12 @@ or you can either configure ffmpeg static binary by using `set_binary_path`
 or set an env FFMEPG_BIN=path/to/ffmpeg
 
 ```rust
-#[tokio::main]
-async fn main() {
+fn main() {
   let ffmpeg = FFMpeg::new();
   ffmpeg
-      .set_binary_path("./ffmpeg") // this line is not necessary if ffmpeg can be invoked globally
       .input_file("./sample.mp4")
-      .output("./output.mp4")
-      .await
+      .output()
+      .save("./output/output.mp4")
       .unwrap();
 }
 ```
@@ -26,14 +24,12 @@ async fn main() {
 ##### Resize to (width, height)
 
 ```rust
-#[tokio::main]
-async fn main() {
+fn main() {
   let ffmpeg = FFMpeg::new();
   ffmpeg
       .input_file("./sample.mp4")
-      .resize((1280, 720))
-      .output("./output_720p.mp4")
-      .await
+      .resize(1280, 720)
+      .save("./output_720p.mp4")
       .unwrap();
 }
 ```
@@ -44,11 +40,7 @@ async fn main() {
 #[tokio::main]
 async fn main() {
   let ffmpeg = FFMpeg::new();
-  let mut reader = ffmpeg
-      .set_binary_path("./ffmpeg")
-      .input_file("./sample.mp4")
-      .stream()
-      .unwrap();
+  let mut reader = ffmpeg.input_file("./sample.mp4").output().resize(-2, 320).stream().unwrap();
   let mut output_file = tokio::fs::File::create("./output-stream.mp4")
       .await
       .unwrap();
@@ -58,7 +50,7 @@ async fn main() {
 }
 ```
 
-stream is useful in some realtime cases, e.g. in actix-web:
+stream is useful in some realtime cases, e.g. http response:
 
 ```rust
 fn some_route() -> HttpResponse {
@@ -72,4 +64,53 @@ fn some_route() -> HttpResponse {
 }
 ```
 
-// TODO: support more options
+#### Other APIs:
+
+##### Set bitrate
+
+```rust
+fn some_route() -> HttpResponse {
+  let ffmpeg = FFMpeg::new();
+  ffmpeg
+      .input_file("./sample.mp4")
+      .bitrate(1000)
+      .save("./output_720p.mp4")
+      .unwrap();
+}
+```
+
+##### Inspect ffmpeg args
+
+```rust
+fn some_route() -> HttpResponse {
+  let ffmpeg = FFMpeg::new();
+  let args = ffmpeg
+      .input_file("./sample.mp4")
+      .bitrate(1000)
+      .build_args(Some("/path/to/output_file"));
+}
+```
+
+##### Combine multiple input
+
+```rust
+fn main() {
+  let start_time = time::Duration::from_secs(30);
+  let end_time = time::Duration::from_secs(60);
+  
+  let input1 = FFMpeg::new()
+      .input_file("./audio.mp3")
+      .only_audio()
+      .start_time(&start_time)
+      .end_time(&end_time);
+
+  let input2 = FFMpeg::new().input_file("./sample.mp4").only_video();
+
+  input1
+      .concat(&input2)
+      .output()
+      .resize(-2, 480)
+      .save("./combination_output.mp4")
+      .unwrap();
+}
+```

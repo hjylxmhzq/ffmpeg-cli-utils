@@ -1,16 +1,18 @@
-use std::process::Stdio;
+use std::{pin::Pin, process::Stdio, task::Poll, cmp};
 
-use crate::{error::Error, input::FFMpegInput, owned};
-
-#[cfg(feature = "async")]
-use tokio::{
-    io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream},
-    process,
+use crate::{
+    error::Error,
+    input::{FFMpegMultipleInput, StreamType},
+    owned, FFMpeg,
 };
+
+use tokio::{io::AsyncRead, sync::mpsc::Receiver};
+#[cfg(feature = "async")]
+use tokio::{io::AsyncReadExt, process};
 
 pub struct FFmpegOutput {
     output_option: OutputOption,
-    input: FFMpegInput,
+    pub(crate) inputs: FFMpegMultipleInput,
 }
 
 #[derive(Clone)]
@@ -19,6 +21,8 @@ struct OutputOption {
     size: Option<(i32, i32)>,
     bitrate: Option<u64>,
     framerate: Option<u64>,
+    format: Option<String>,
+    custom_args: Vec<String>,
 }
 
 pub struct SpawnResult {
@@ -27,22 +31,32 @@ pub struct SpawnResult {
 }
 
 impl FFmpegOutput {
-    pub fn new(ffmpeg_input: FFMpegInput) -> Self {
+    pub fn new(ffmpeg_input: FFMpegMultipleInput) -> Self {
         FFmpegOutput {
             output_option: OutputOption {
                 size: None,
                 bitrate: None,
                 framerate: None,
-                stream_buffer_size: 1024,
+                stream_buffer_size: 1024 * 10,
+                format: Some("mp4".to_owned()),
+                custom_args: owned!["-y", "-hide_banner", "-loglevel", "error"],
             },
-            input: ffmpeg_input,
+            inputs: ffmpeg_input,
         }
     }
+
+    pub fn args(mut self, args: Vec<impl AsRef<str>>) -> Self {
+        for arg in args {
+            let arg = arg.as_ref();
+            self.output_option.custom_args.push(arg.to_owned());
+        }
+        self
+    }
+
     pub fn save(&self, file: &str) -> Result<SpawnResult, Error> {
-        let ffmpeg_bin = self.input.get_ffmpeg_bin()?;
+        let ffmpeg_bin = FFMpeg::get_ffmpeg_bin();
 
         let args = self.build_args(Some(file.to_owned()))?;
-        println!("{ffmpeg_bin} {args:?}");
         let child = std::process::Command::new(ffmpeg_bin)
             .args(args)
             .stdout(Stdio::piped())
@@ -55,16 +69,18 @@ impl FFmpegOutput {
 
         let stdout = String::from_utf8_lossy(&stdout).into_owned();
         let stderr = String::from_utf8_lossy(&stderr).into_owned();
-
+        if !stderr.is_empty() {
+            return Err(Error { msg: stderr });
+        }
         Ok(SpawnResult { stderr, stdout })
     }
     #[cfg(feature = "async")]
     pub async fn async_save(&self, file: &str) -> Result<String, Error> {
-        let ffmpeg_bin = self.input.get_ffmpeg_bin()?;
+        let ffmpeg_bin = FFMpeg::get_ffmpeg_bin();
 
         let args = self.build_args(Some(file.to_owned()))?;
         println!("{ffmpeg_bin} {args:?}");
-        let mut child = process::Command::new(ffmpeg_bin)
+        let child = process::Command::new(ffmpeg_bin)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -72,61 +88,99 @@ impl FFmpegOutput {
 
         let mut err_buf = String::with_capacity(100);
         let mut out_buf = String::with_capacity(100);
-        let mut out = String::new();
-        let mut err = String::new();
 
-        let stdout = child.stdout.as_mut().unwrap();
-        let stderr = child.stderr.as_mut().unwrap();
+        let mut stdout = child.stdout.unwrap();
+        let mut stderr = child.stderr.unwrap();
 
-        while let Ok(size) = stdout.read_to_string(&mut out_buf).await {
-            if size == 0 {
-                break;
+        let out = tokio::spawn(async move {
+            let mut out = String::new();
+            while let Ok(size) = stdout.read_to_string(&mut out_buf).await {
+                if size == 0 {
+                    break;
+                }
+                out.push_str(&out_buf[0..size]);
             }
-            out.push_str(&out_buf[0..size]);
-        }
-
-        while let Ok(size) = stderr.read_to_string(&mut err_buf).await {
-            if size == 0 {
-                break;
+            out
+        });
+        let err = tokio::spawn(async move {
+            let mut err = String::new();
+            while let Ok(size) = stderr.read_to_string(&mut err_buf).await {
+                if size == 0 {
+                    break;
+                }
+                err.push_str(&err_buf[0..size]);
             }
-            err.push_str(&err_buf[0..size]);
-        }
+            err
+        });
 
-        child.wait().await.map_err(|_| Error { msg: err })?;
+        let err = err.await.unwrap();
+        let out = out.await.unwrap();
+        if !err.is_empty() {
+            return Err(Error { msg: err });
+        }
         Ok(out)
     }
 
     pub fn build_args(&self, output_file: Option<String>) -> Result<Vec<String>, Error> {
-        let mut args = self.input.build_args()?;
+        let inputs = &self.inputs.inputs;
+
+        let mut input_args: Vec<String> = owned![];
+        let mut output_args: Vec<String> = owned![];
+
+        for (idx, input) in inputs.iter().enumerate() {
+            let mut args = input.build_args().unwrap();
+            match input.stream_type {
+                StreamType::Audio => {
+                    output_args.append(&mut owned!["-map", &format!("{idx}:a")]);
+                }
+                StreamType::Video => {
+                    output_args.append(&mut owned!["-map", &format!("{idx}:v")]);
+                }
+                _ => (),
+            }
+            input_args.append(&mut args);
+        }
 
         if let Some(size) = self.output_option.size {
-            args.append(&mut owned![
+            input_args.append(&mut owned![
                 "-filter:v",
                 &format!("scale={}:{}", size.0, size.1)
             ]);
         }
 
         if let Some(bitrate) = self.output_option.bitrate {
-            args.append(&mut owned!["-b:v", &bitrate.to_string()]);
+            input_args.append(&mut owned!["-b:v", &bitrate.to_string()]);
         }
 
         if let Some(framerate) = self.output_option.framerate {
-            args.append(&mut owned!["-r", &framerate.to_string()]);
+            input_args.append(&mut owned!["-r", &framerate.to_string()]);
         }
 
-        let mut format_args = owned!["-movflags", "frag_keyframe+empty_moov", "-f", "mp4"];
+        let mut format_args = owned!["-movflags", "frag_keyframe+empty_moov"];
+        output_args.append(&mut format_args);
 
-        let mut output_method_args = if let Some(output_file) = output_file {
+        if let Some(ref format) = self.output_option.format {
+            output_args.append(&mut owned!["-f", format]);
+        }
+
+        let mut ending_args = owned![];
+        let mut output_target = if let Some(output_file) = output_file {
             owned![output_file]
         } else {
-            owned!["pipe:1"]
+            ending_args.append(&mut owned!("pipe:1"));
+            owned!()
         };
 
-        args.append(&mut format_args);
+        output_args.append(&mut self.output_option.custom_args.clone());
 
-        args.append(&mut output_method_args);
+        input_args.append(&mut output_target);
 
-        Ok(args)
+        input_args.append(&mut output_args);
+
+        input_args.append(&mut ending_args);
+
+        println!("{}", input_args.join(" "));
+        Ok(input_args)
     }
     pub fn set_buffer_size(mut self, size: usize) -> Self {
         self.output_option.stream_buffer_size = size;
@@ -145,9 +199,12 @@ impl FFmpegOutput {
         self
     }
     #[cfg(feature = "async")]
-    pub fn stream(&self) -> Result<DuplexStream, Error> {
-        let (mut w, r) = duplex(self.output_option.stream_buffer_size);
-        let ffmpeg_bin = self.input.get_ffmpeg_bin()?;
+    pub fn stream(&self) -> Result<Reader, Error> {
+        use tokio::sync::mpsc;
+
+        let buffer_max = self.output_option.stream_buffer_size;
+        let (w, r) = mpsc::channel::<ChannelData>(64);
+        let ffmpeg_bin = FFMpeg::get_ffmpeg_bin();
         let args = self.build_args(Option::<String>::None)?;
         tokio::spawn(async move {
             let mut child = process::Command::new(ffmpeg_bin)
@@ -157,19 +214,135 @@ impl FFmpegOutput {
                 .spawn()
                 .unwrap();
             let mut stdout = child.stdout.take().unwrap();
-            let mut buf = [0; 1024];
+            let mut stderr = child.stderr.take().unwrap();
+            let mut buf = vec![0; buffer_max];
+            let mut err_str_buf = String::with_capacity(256);
+            let mut err_str = String::new();
 
-            while let Ok(size) = stdout.read(&mut buf).await {
-                if size == 0 {
+            loop {
+                let a = stdout.read(&mut buf);
+                let b = stderr.read_to_string(&mut err_str_buf);
+                let mut out_size = 0;
+                let mut err_size = 0;
+                tokio::select!(
+                    out = a => {
+                        match out {
+                            Ok(out_s) => {
+                                out_size = out_s;
+                            },
+                            Err(e) => {
+                                child.kill().await.unwrap();
+                                w.send(ChannelData::Err(e.to_string())).await.unwrap();
+                                break;
+                            }
+                        }
+                    },
+                    err = b => {
+                        match err {
+                            Ok(err_s) => {
+                                err_size = err_s;
+                            },
+                            Err(e) => {
+                                child.kill().await.unwrap();
+                                w.send(ChannelData::Err(e.to_string())).await.unwrap();
+                                break;
+                            }
+                        }
+                    }
+                );
+                // println!("pppp {out_size} {err_size}");
+                if out_size == 0 && err_size == 0 {
+                    if !err_str.is_empty() {
+                        w.send(ChannelData::Err(err_str)).await.unwrap();
+                    } else {
+                        w.send(ChannelData::End).await.unwrap();
+                    }
                     break;
                 }
-                let r = w.write_all(&buf[0..size]).await;
-                if let Err(_) = r {
-                    child.kill().await.unwrap();
-                    break;
+                if out_size != 0 {
+                    let bytes = buf[0..out_size].to_vec();
+                    w.send(ChannelData::Data(bytes)).await.unwrap();
+                }
+                if err_size != 0 {
+                    err_str.push_str(&err_str_buf[0..err_size]);
                 }
             }
         });
+        let r = Reader {
+            r: Box::pin(r),
+            cached: Box::pin(vec![]),
+            read: 0,
+        };
         Ok(r)
+    }
+}
+
+#[derive(Debug)]
+enum ChannelData {
+    Data(Vec<u8>),
+    Err(String),
+    End,
+}
+
+pub struct Reader {
+    r: Pin<Box<Receiver<ChannelData>>>,
+    cached: Pin<Box<Vec<u8>>>,
+    read: usize,
+}
+
+impl AsyncRead for Reader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let cached_len = self.cached.len();
+        if cached_len > 0 {
+            let remain = buf.remaining();
+            let min = cmp::min(cached_len, remain);
+            let to_fill: Vec<u8> = self.cached.drain(0..min).collect();
+            self.read += to_fill.len();
+            buf.put_slice(&to_fill);
+            return Poll::Ready(Ok(()));
+        }
+        let r = self.r.poll_recv(cx);
+        let cached = &mut self.cached;
+        match r {
+            Poll::Ready(val) => match val {
+                Some(val) => match val {
+                    ChannelData::Data(mut data) => {
+                        cached.append(&mut data);
+                        let remain = buf.remaining();
+                        let len = cached.len();
+                        if len == 0 {
+                            return Poll::Ready(Ok(()));
+                        }
+                        let min = cmp::min(len, remain);
+                        let to_fill: Vec<u8> = cached.drain(0..min).collect();
+                        self.read += to_fill.len();
+                        buf.put_slice(&to_fill);
+                        Poll::Ready(Ok(()))
+                    }
+                    ChannelData::Err(err) => Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        err,
+                    ))),
+                    ChannelData::End => {
+                        let remain = buf.remaining();
+                        let len = cached.len();
+                        if len == 0 {
+                            return Poll::Ready(Ok(()));
+                        }
+                        let min = cmp::min(len, remain);
+                        let to_fill: Vec<u8> = cached.drain(0..min).collect();
+                        self.read += to_fill.len();
+                        buf.put_slice(&to_fill);
+                        Poll::Ready(Ok(()))
+                    },
+                },
+                None => Poll::Pending,
+            },
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
