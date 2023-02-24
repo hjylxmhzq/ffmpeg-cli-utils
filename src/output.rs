@@ -1,4 +1,4 @@
-use std::{pin::Pin, process::Stdio, task::Poll, cmp};
+use std::{cmp, pin::Pin, process::Stdio, task::Poll};
 
 use crate::{
     error::Error,
@@ -23,6 +23,8 @@ struct OutputOption {
     framerate: Option<u64>,
     format: Option<String>,
     custom_args: Vec<String>,
+    video_filters: Vec<String>,
+    audio_filters: Vec<String>,
 }
 
 pub struct SpawnResult {
@@ -40,6 +42,8 @@ impl FFmpegOutput {
                 stream_buffer_size: 1024 * 10,
                 format: Some("mp4".to_owned()),
                 custom_args: owned!["-y", "-hide_banner", "-loglevel", "error"],
+                video_filters: vec![],
+                audio_filters: vec![],
             },
             inputs: ffmpeg_input,
         }
@@ -121,6 +125,28 @@ impl FFmpegOutput {
         Ok(out)
     }
 
+    pub fn video_filter(mut self, f: &str) -> Self {
+        self.output_option.video_filters.push(f.to_owned());
+        self
+    }
+
+    pub fn video_filters(mut self, filters: &[&str]) -> Self {
+        let mut filters: Vec<String> = filters.iter().map(|item| (*item).to_owned()).collect();
+        self.output_option.video_filters.append(&mut filters);
+        self
+    }
+
+    pub fn audio_filter(mut self, f: &str) -> Self {
+        self.output_option.audio_filters.push(f.to_owned());
+        self
+    }
+
+    pub fn audio_filters(mut self, filters: &[&str]) -> Self {
+        let mut filters: Vec<String> = filters.iter().map(|item| (*item).to_owned()).collect();
+        self.output_option.audio_filters.append(&mut filters);
+        self
+    }
+
     pub fn build_args(&self, output_file: Option<String>) -> Result<Vec<String>, Error> {
         let inputs = &self.inputs.inputs;
 
@@ -129,12 +155,17 @@ impl FFmpegOutput {
 
         for (idx, input) in inputs.iter().enumerate() {
             let mut args = input.build_args().unwrap();
+            let stream_index = if let Some(s_idx) = input.stream_index {
+                format!(":{s_idx}")
+            } else {
+                "".to_owned()
+            };
             match input.stream_type {
                 StreamType::Audio => {
-                    output_args.append(&mut owned!["-map", &format!("{idx}:a")]);
+                    output_args.append(&mut owned!["-map", &format!("{idx}:a{stream_index}")]);
                 }
                 StreamType::Video => {
-                    output_args.append(&mut owned!["-map", &format!("{idx}:v")]);
+                    output_args.append(&mut owned!["-map", &format!("{idx}:v{stream_index}")]);
                 }
                 _ => (),
             }
@@ -146,6 +177,14 @@ impl FFmpegOutput {
                 "-filter:v",
                 &format!("scale={}:{}", size.0, size.1)
             ]);
+        }
+
+        for filter in &self.output_option.video_filters {
+            input_args.append(&mut owned!["-filter:v", filter]);
+        }
+
+        for filter in &self.output_option.video_filters {
+            input_args.append(&mut owned!["-filter:a", filter]);
         }
 
         if let Some(bitrate) = self.output_option.bitrate {
@@ -338,7 +377,7 @@ impl AsyncRead for Reader {
                         self.read += to_fill.len();
                         buf.put_slice(&to_fill);
                         Poll::Ready(Ok(()))
-                    },
+                    }
                 },
                 None => Poll::Pending,
             },

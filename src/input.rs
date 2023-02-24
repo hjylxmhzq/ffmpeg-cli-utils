@@ -2,7 +2,7 @@ use std::{path::Path, time};
 
 use crate::{error::Error, output::FFmpegOutput, owned, utils::format_time};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum StreamType {
     Audio,
     Video,
@@ -18,6 +18,7 @@ pub struct FFMpegInput {
     pub(crate) custom_args: Vec<String>,
     pub(crate) start_time: Option<String>,
     pub(crate) end_time: Option<String>,
+    pub(crate) stream_index: Option<u64>,
 }
 
 impl FFMpegInput {
@@ -30,6 +31,7 @@ impl FFMpegInput {
             custom_args: owned![],
             start_time: None,
             end_time: None,
+            stream_index: None,
         };
     }
 
@@ -54,6 +56,12 @@ impl FFMpegInput {
 
     pub fn only_video(mut self) -> Self {
         self.stream_type = StreamType::Video;
+        self
+    }
+
+    pub fn take_stream(mut self, stream_index: u64) -> Self {
+        assert_ne!(self.stream_type, StreamType::Both, "must specify video/audio stream by using .only_audio() or .only_video() before take stream");
+        self.stream_index = Some(stream_index);
         self
     }
 
