@@ -1,9 +1,11 @@
-use std::{cmp, io::Write, pin::Pin, process::Stdio, task::Poll, path::PathBuf, str::FromStr};
+use std::{cmp, io::Write, path::PathBuf, pin::Pin, process::Stdio, str::FromStr, task::Poll};
 
 use crate::{
     error::Error,
     input::{FFMpegMultipleInput, MergeStrategy, StreamType},
-    owned, FFMpeg,
+    owned,
+    utils::read_to_string,
+    FFMpeg,
 };
 
 use tempfile::NamedTempFile;
@@ -26,6 +28,8 @@ struct OutputOption {
     video_filters: Vec<String>,
     audio_filters: Vec<String>,
     temp_input_filelist: Option<NamedTempFile>,
+    timeout: Option<u64>,
+    verbose: bool,
 }
 
 pub struct SpawnResult {
@@ -41,11 +45,13 @@ impl FFmpegOutput {
                 bitrate: None,
                 framerate: None,
                 stream_buffer_size: 1024 * 10,
-                format: Some("mp4".to_owned()),
-                custom_args: owned!["-y", "-hide_banner", "-loglevel", "error"],
+                format: None,
+                custom_args: owned![],
                 video_filters: vec![],
                 audio_filters: vec![],
                 temp_input_filelist: None,
+                timeout: None,
+                verbose: false,
             },
             inputs: ffmpeg_input,
         }
@@ -59,22 +65,29 @@ impl FFmpegOutput {
         self
     }
 
+    pub fn timeout(mut self, timeout: u64) -> Self {
+        self.output_option.timeout = Some(timeout);
+        self
+    }
+
     pub fn save(&mut self, file: &str) -> Result<SpawnResult, Error> {
         let ffmpeg_bin = FFMpeg::get_ffmpeg_bin();
 
         let args = self.build_args(Some(file.to_owned()))?;
-        let child = std::process::Command::new(ffmpeg_bin)
+        println!("exec: {} {}", ffmpeg_bin, args.join(" "));
+        let mut child = std::process::Command::new(ffmpeg_bin)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .spawn()
             .unwrap();
 
-        let stdout = child.stdout;
-        let stderr = child.stderr;
+        child.wait().unwrap();
+        let mut stdout = child.stdout.unwrap();
+        let mut stderr = child.stderr.unwrap();
 
-        let stdout = String::from_utf8_lossy(&stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&stderr).into_owned();
+        let stdout = read_to_string(&mut stdout);
+        let stderr = read_to_string(&mut stderr);
         if !stderr.is_empty() {
             return Err(Error { msg: stderr });
         }
@@ -149,7 +162,23 @@ impl FFmpegOutput {
         self
     }
 
+    pub fn format(mut self, format: &str) -> Self {
+        self.output_option.format = Some(format.to_owned());
+        self
+    }
+
+    pub fn verbose(mut self) -> Self {
+        self.output_option.verbose = true;
+        self
+    }
+
     pub fn build_args(&mut self, output_file: Option<String>) -> Result<Vec<String>, Error> {
+        let mut verbose_args = if !self.output_option.verbose {
+            owned!["-y", "-hide_banner", "-loglevel", "error"]
+        } else {
+            owned![]
+        };
+
         let inputs = &self.inputs.inputs;
         let merge_strategy = &self.inputs.merge_strategy;
 
@@ -180,7 +209,12 @@ impl FFmpegOutput {
             let mut tempfile = tempfile::NamedTempFile::new()?;
             for (_, input) in inputs.iter().enumerate() {
                 let file = input.get_input_file()?;
-                let file = PathBuf::from_str(&file).unwrap().canonicalize().unwrap().to_string_lossy().to_string();
+                let file = PathBuf::from_str(&file)
+                    .unwrap()
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
                 let file = "file '".to_owned() + &file + "'\n";
                 tempfile.write_all(file.as_bytes()).unwrap();
             }
@@ -217,26 +251,29 @@ impl FFmpegOutput {
             input_args.append(&mut owned!["-r", &framerate.to_string()]);
         }
 
-        let mut format_args = owned!["-movflags", "frag_keyframe+empty_moov"];
+        let mut format_args = vec![];
         output_args.append(&mut format_args);
+
+        if let Some(timeout) = self.output_option.timeout {
+            output_args.append(&mut owned!["-t", &timeout.to_string()]);
+        }
 
         if let Some(ref format) = self.output_option.format {
             output_args.append(&mut owned!["-f", format]);
         }
 
         let mut ending_args = owned![];
-        let mut output_target = if let Some(output_file) = output_file {
-            owned![output_file]
+        if let Some(output_file) = output_file {
+            ending_args.append(&mut owned![output_file]);
         } else {
             ending_args.append(&mut owned!("pipe:1"));
-            owned!()
         };
 
         output_args.append(&mut self.output_option.custom_args.clone());
 
-        input_args.append(&mut output_target);
-
         input_args.append(&mut output_args);
+
+        input_args.append(&mut verbose_args);
 
         input_args.append(&mut ending_args);
 
@@ -266,7 +303,8 @@ impl FFmpegOutput {
         let buffer_max = self.output_option.stream_buffer_size;
         let (w, r) = mpsc::channel::<ChannelData>(64);
         let ffmpeg_bin = FFMpeg::get_ffmpeg_bin();
-        let args = self.build_args(Option::<String>::None)?;
+        let mut args = self.build_args(Option::<String>::None)?;
+        args.append(&mut owned!["-movflags", "frag_keyframe+empty_moov"]);
         tokio::spawn(async move {
             let mut child = process::Command::new(ffmpeg_bin)
                 .args(args)

@@ -1,6 +1,6 @@
 //! ffmpeg_cli_utils
 //! Provide rust style ffmpeg control APIs
-//! 
+//!
 //! ## Intro
 
 //! ### Simple input/output
@@ -96,7 +96,7 @@
 //! fn main() {
 //!   let start_time = time::Duration::from_secs(30);
 //!   let end_time = time::Duration::from_secs(60);
-  
+
 //!   let input1 = FFMpeg::new()
 //!       .input_file("./audio.mp3")
 //!       .only_audio()
@@ -123,6 +123,8 @@ mod utils;
 use std::sync::Mutex;
 
 pub use input::FFMpegInput;
+pub use input::FFMpegMultipleInput;
+pub mod tools;
 
 pub struct FFMpeg {}
 use lazy_static::lazy_static;
@@ -153,6 +155,9 @@ impl FFMpeg {
     pub fn new() -> FFMpegInput {
         FFMpegInput::new()
     }
+    pub fn input(file: &str) -> FFMpegInput {
+        FFMpegInput::input(file)
+    }
     pub fn set_ffmpeg_bin(bin_path: &str) {
         let mut s = BIN_PATH.lock().unwrap();
         s.clone_from(&bin_path.to_owned());
@@ -166,7 +171,7 @@ impl FFMpeg {
 #[cfg(test)]
 mod tests {
 
-    use crate::{FFMpeg, input::FFMpegMultipleInput};
+    use crate::{input::FFMpegMultipleInput, tools, FFMpeg};
     use std::{fs, process, str::FromStr, sync::Once, time};
 
     static ONCE: Once = Once::new();
@@ -272,7 +277,7 @@ mod tests {
         init();
         let start_time = time::Duration::from_secs(30);
         let end_time = time::Duration::from_secs(60);
-        
+
         let input1 = FFMpeg::new()
             .input_file("./audio.oggl")
             .only_audio()
@@ -295,9 +300,52 @@ mod tests {
 
         let input1 = "./sample.mp4";
         let input2 = "./sample1.mp4";
-        
+
         let mut concat_output = FFMpegMultipleInput::concat(&[input1, input2]).output();
         concat_output.save("./output/concat_videos.mp4").unwrap();
+    }
+
+    #[test]
+    fn screenshot() {
+        init();
+        tools::screenshot("./sample.mp4", &time::Duration::from_secs(30))
+            .resize(-2, 320)
+            .save("./output/screenshot.jpg")
+            .unwrap();
+    }
+
+    #[test]
+    fn capture_screen() {
+        init();
+        tools::capture_screen().timeout(3).save("./output/capture.mkv").unwrap();
+    }
+
+    #[test]
+    fn concat_and_resize_videos() {
+        init();
+
+        let input1 = "./sample.mp4";
+        let input2 = "./sample1.mp4";
+
+        let concat_output = FFMpegMultipleInput::concat(&[input1, input2]).output();
+        concat_output
+            .resize(-2, 320)
+            .save("./output/concat_320p.mp4")
+            .unwrap();
+    }
+
+    #[test]
+    fn concat_and_reformat_videos() {
+        init();
+
+        let input1 = "./sample.mp4";
+        let input2 = "./sample1.mp4";
+
+        let concat_output = FFMpegMultipleInput::concat(&[input1, input2]).output();
+        concat_output
+            .format("avi")
+            .save("./output/concat_videos.avi")
+            .unwrap();
     }
 
     #[tokio::test]

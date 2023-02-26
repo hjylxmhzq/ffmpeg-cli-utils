@@ -19,6 +19,7 @@ pub struct FFMpegInput {
     pub(crate) start_time: Option<String>,
     pub(crate) end_time: Option<String>,
     pub(crate) stream_index: Option<u64>,
+    pub(crate) format: Option<String>,
 }
 
 impl FFMpegInput {
@@ -32,7 +33,18 @@ impl FFMpegInput {
             start_time: None,
             end_time: None,
             stream_index: None,
+            format: None,
         };
+    }
+
+    pub fn format(mut self, format: &str) -> Self {
+        self.format = Some(format.to_owned());
+        self
+    }
+
+    pub fn arg(mut self, arg: &str) -> Self {
+        self.custom_args.push(arg.to_owned());
+        self
     }
 
     pub fn args(mut self, args: Vec<impl AsRef<str>>) -> Self {
@@ -131,10 +143,18 @@ impl FFMpegInput {
             input_args.append(&mut owned!["-to", end_time]);
         }
 
+        if let Some(ref format) = self.format {
+            input_args.append(&mut owned!["-f", format]);
+        }
+
+        for arg in &self.custom_args {
+            input_args.push(arg.to_owned());
+        }
+
         let mut args = owned!["-i", &abs_file];
 
         input_args.append(&mut args);
-        
+
         Ok(input_args)
     }
 
@@ -166,11 +186,24 @@ impl FFMpegMultipleInput {
         }
     }
 
+    /// concat inputs by order to one output
+    ///
+    /// samples:
+    /// ```
+    /// use ffmpeg_cli_utils::FFMpegMultipleInput;
+    /// # use ffmpeg_cli_utils::FFMpeg;
+    /// # FFMpeg::set_ffmpeg_bin("./ffmpeg");
+    /// let videos = ["./sample.mp4", "./sample1.mp4"];
+    /// FFMpegMultipleInput::concat(&videos)
+    ///     .output()
+    ///     .save("./output/concat_output.mp4");
+    /// ```
     pub fn concat(inputs: &[&str]) -> Self {
-        let inputs: Vec<FFMpegInput> = inputs.into_iter().map(|i| {
-            FFMpegInput::input(*i)
-        }).collect();
-        Self { inputs, merge_strategy: MergeStrategy::Concat }
+        let inputs: Vec<FFMpegInput> = inputs.into_iter().map(|i| FFMpegInput::input(*i)).collect();
+        Self {
+            inputs,
+            merge_strategy: MergeStrategy::Concat,
+        }
     }
 
     pub fn merge(one: &FFMpegInput, two: &FFMpegInput) -> Self {
@@ -185,6 +218,6 @@ impl FFMpegMultipleInput {
     }
 
     pub fn output(self) -> FFmpegOutput {
-        return FFmpegOutput::new(self)
+        return FFmpegOutput::new(self);
     }
 }
