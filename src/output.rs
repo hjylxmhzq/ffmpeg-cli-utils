@@ -1,11 +1,12 @@
-use std::{cmp, pin::Pin, process::Stdio, task::Poll};
+use std::{cmp, io::Write, pin::Pin, process::Stdio, task::Poll, path::PathBuf, str::FromStr};
 
 use crate::{
     error::Error,
-    input::{FFMpegMultipleInput, StreamType},
+    input::{FFMpegMultipleInput, MergeStrategy, StreamType},
     owned, FFMpeg,
 };
 
+use tempfile::NamedTempFile;
 use tokio::{io::AsyncRead, sync::mpsc::Receiver};
 #[cfg(feature = "async")]
 use tokio::{io::AsyncReadExt, process};
@@ -15,7 +16,6 @@ pub struct FFmpegOutput {
     pub(crate) inputs: FFMpegMultipleInput,
 }
 
-#[derive(Clone)]
 struct OutputOption {
     stream_buffer_size: usize,
     size: Option<(i32, i32)>,
@@ -25,6 +25,7 @@ struct OutputOption {
     custom_args: Vec<String>,
     video_filters: Vec<String>,
     audio_filters: Vec<String>,
+    temp_input_filelist: Option<NamedTempFile>,
 }
 
 pub struct SpawnResult {
@@ -44,6 +45,7 @@ impl FFmpegOutput {
                 custom_args: owned!["-y", "-hide_banner", "-loglevel", "error"],
                 video_filters: vec![],
                 audio_filters: vec![],
+                temp_input_filelist: None,
             },
             inputs: ffmpeg_input,
         }
@@ -57,7 +59,7 @@ impl FFmpegOutput {
         self
     }
 
-    pub fn save(&self, file: &str) -> Result<SpawnResult, Error> {
+    pub fn save(&mut self, file: &str) -> Result<SpawnResult, Error> {
         let ffmpeg_bin = FFMpeg::get_ffmpeg_bin();
 
         let args = self.build_args(Some(file.to_owned()))?;
@@ -79,7 +81,7 @@ impl FFmpegOutput {
         Ok(SpawnResult { stderr, stdout })
     }
     #[cfg(feature = "async")]
-    pub async fn async_save(&self, file: &str) -> Result<String, Error> {
+    pub async fn async_save(&mut self, file: &str) -> Result<String, Error> {
         let ffmpeg_bin = FFMpeg::get_ffmpeg_bin();
 
         let args = self.build_args(Some(file.to_owned()))?;
@@ -147,29 +149,49 @@ impl FFmpegOutput {
         self
     }
 
-    pub fn build_args(&self, output_file: Option<String>) -> Result<Vec<String>, Error> {
+    pub fn build_args(&mut self, output_file: Option<String>) -> Result<Vec<String>, Error> {
         let inputs = &self.inputs.inputs;
+        let merge_strategy = &self.inputs.merge_strategy;
 
         let mut input_args: Vec<String> = owned![];
         let mut output_args: Vec<String> = owned![];
 
-        for (idx, input) in inputs.iter().enumerate() {
-            let mut args = input.build_args().unwrap();
-            let stream_index = if let Some(s_idx) = input.stream_index {
-                format!(":{s_idx}")
-            } else {
-                "".to_owned()
-            };
-            match input.stream_type {
-                StreamType::Audio => {
-                    output_args.append(&mut owned!["-map", &format!("{idx}:a{stream_index}")]);
+        if let MergeStrategy::Merge = merge_strategy {
+            for (idx, input) in inputs.iter().enumerate() {
+                let mut args = input.build_args().unwrap();
+                let stream_index = if let Some(s_idx) = input.stream_index {
+                    format!(":{s_idx}")
+                } else {
+                    "".to_owned()
+                };
+                match input.stream_type {
+                    StreamType::Audio => {
+                        output_args.append(&mut owned!["-map", &format!("{idx}:a{stream_index}")]);
+                    }
+                    StreamType::Video => {
+                        output_args.append(&mut owned!["-map", &format!("{idx}:v{stream_index}")]);
+                    }
+                    _ => (),
                 }
-                StreamType::Video => {
-                    output_args.append(&mut owned!["-map", &format!("{idx}:v{stream_index}")]);
-                }
-                _ => (),
+                input_args.append(&mut args);
             }
-            input_args.append(&mut args);
+        } else {
+            input_args.append(&mut owned!["-f", "concat", "-safe", "0", "-i"]);
+            let mut tempfile = tempfile::NamedTempFile::new()?;
+            for (_, input) in inputs.iter().enumerate() {
+                let file = input.get_input_file()?;
+                let file = PathBuf::from_str(&file).unwrap().canonicalize().unwrap().to_string_lossy().to_string();
+                let file = "file '".to_owned() + &file + "'\n";
+                tempfile.write_all(file.as_bytes()).unwrap();
+            }
+            tempfile.flush().unwrap();
+            let tempfile_path = tempfile.path();
+            let tempfile_path = tempfile_path.canonicalize().unwrap();
+            input_args.push(format!(
+                r#"{}"#,
+                tempfile_path.to_string_lossy().to_string()
+            ));
+            self.output_option.temp_input_filelist = Some(tempfile);
         }
 
         if let Some(size) = self.output_option.size {
@@ -238,7 +260,7 @@ impl FFmpegOutput {
         self
     }
     #[cfg(feature = "async")]
-    pub fn stream(&self) -> Result<Reader, Error> {
+    pub fn stream(&mut self) -> Result<Reader, Error> {
         use tokio::sync::mpsc;
 
         let buffer_max = self.output_option.stream_buffer_size;

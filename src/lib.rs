@@ -166,7 +166,7 @@ impl FFMpeg {
 #[cfg(test)]
 mod tests {
 
-    use crate::FFMpeg;
+    use crate::{FFMpeg, input::FFMpegMultipleInput};
     use std::{fs, process, str::FromStr, sync::Once, time};
 
     static ONCE: Once = Once::new();
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn combine_videos() {
+    fn merge_videos() {
         init();
         let start_time = time::Duration::from_secs(30);
         let end_time = time::Duration::from_secs(60);
@@ -282,11 +282,22 @@ mod tests {
         let input2 = FFMpeg::new().input_file("./sample.mp4").only_video();
 
         input1
-            .concat(&input2)
+            .merge(&input2)
             .output()
             .resize(-2, 480)
             .save("./output/combination_output.mp4")
             .unwrap();
+    }
+
+    #[test]
+    fn concat_videos() {
+        init();
+
+        let input1 = "./sample.mp4";
+        let input2 = "./sample1.mp4";
+        
+        let mut concat_output = FFMpegMultipleInput::concat(&[input1, input2]).output();
+        concat_output.save("./output/concat_videos.mp4").unwrap();
     }
 
     #[tokio::test]

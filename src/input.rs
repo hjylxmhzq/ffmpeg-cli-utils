@@ -43,6 +43,11 @@ impl FFMpegInput {
         self
     }
 
+    pub fn input(file: impl AsRef<Path>) -> Self {
+        let ffmpeg = Self::new();
+        ffmpeg.input_file(file)
+    }
+
     pub fn input_file(mut self, file: impl AsRef<Path>) -> Self {
         let file = Some(file.as_ref().to_string_lossy().into_owned());
         self.input_file = file;
@@ -138,25 +143,40 @@ impl FFMpegInput {
         return FFmpegOutput::new(input);
     }
 
-    pub fn concat(&self, anthor_input: &FFMpegInput) -> FFMpegMultipleInput {
-        FFMpegMultipleInput::combine(self, anthor_input)
+    pub fn merge(&self, anthor_input: &FFMpegInput) -> FFMpegMultipleInput {
+        FFMpegMultipleInput::merge(self, anthor_input)
     }
+}
+
+pub enum MergeStrategy {
+    Merge,
+    Concat,
 }
 
 pub struct FFMpegMultipleInput {
     pub(crate) inputs: Vec<FFMpegInput>,
+    pub(crate) merge_strategy: MergeStrategy,
 }
 
 impl FFMpegMultipleInput {
     pub fn new(input: &FFMpegInput) -> Self {
         Self {
             inputs: vec![input.clone()],
+            merge_strategy: MergeStrategy::Merge,
         }
     }
 
-    pub fn combine(one: &FFMpegInput, two: &FFMpegInput) -> Self {
+    pub fn concat(inputs: &[&str]) -> Self {
+        let inputs: Vec<FFMpegInput> = inputs.into_iter().map(|i| {
+            FFMpegInput::input(*i)
+        }).collect();
+        Self { inputs, merge_strategy: MergeStrategy::Concat }
+    }
+
+    pub fn merge(one: &FFMpegInput, two: &FFMpegInput) -> Self {
         Self {
             inputs: vec![one.clone(), two.clone()],
+            merge_strategy: MergeStrategy::Merge,
         }
     }
     pub fn append(&mut self, inputs: Vec<&FFMpegInput>) {
